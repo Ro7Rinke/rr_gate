@@ -1,10 +1,9 @@
-//version 0.2
+//version 0.3
 
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Arduino.h>
-#include <Crypto.h>
-#include <SHA256.h>
+#include <mbedtls/sha256.h>
 #include <esp_random.h>
 #include <time.h>
 
@@ -14,14 +13,14 @@ const char* password = "WIFI_PASS";
 const int RELAY_PIN = 5;
 WebServer server(80);
 
-// Usuário e senha (hash SHA256 da senha "1234")
+// Usuário e senha (SHA256 de "1234")
 const String USERNAME = "admin";
 const String PASSWORD_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8f9660a1b2c7b2d2a1c1ee9a5";
 
 // Sessão
 String sessionToken = "";
-time_t sessionExpiry = 0; // agora usando hora real
-const time_t SESSION_DURATION = 7UL * 24UL * 60UL * 60UL; // 1 semana em segundos
+time_t sessionExpiry = 0;
+const time_t SESSION_DURATION = 7UL * 24UL * 60UL * 60UL; // 1 semana
 
 // Pulso do relé
 bool relayActive = false;
@@ -37,7 +36,10 @@ const unsigned long NTP_SYNC_INTERVAL = 12UL * 60UL * 60UL * 1000UL; // 12h
 bool timeSynced = false;   // indica se a hora real já foi sincronizada
 const int MAX_NTP_RETRIES = 5;
 
-// HTML login
+// Fallback
+time_t fallbackBase = 0;
+
+// ================== HTML ==================
 const char* loginPage = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -63,7 +65,6 @@ button:active { transform: scale(0.95); box-shadow: 0 5px 10px rgba(0,0,0,0.4), 
 </html>
 )rawliteral";
 
-// HTML relé
 String relayPage() {
   return R"rawliteral(
 <!DOCTYPE html>
@@ -90,12 +91,12 @@ document.getElementById("activateBtn").addEventListener("click", () => {
 )rawliteral";
 }
 
-// Função SHA-256
+// ================== FUNÇÕES ==================
 String sha256(const String &input) {
   byte hash[32];
   mbedtls_sha256_context ctx;
   mbedtls_sha256_init(&ctx);
-  mbedtls_sha256_starts_ret(&ctx, 0); // 0 = SHA-256
+  mbedtls_sha256_starts_ret(&ctx, 0);
   mbedtls_sha256_update_ret(&ctx, (const unsigned char*)input.c_str(), input.length());
   mbedtls_sha256_finish_ret(&ctx, hash);
   mbedtls_sha256_free(&ctx);
@@ -107,10 +108,11 @@ String sha256(const String &input) {
   return String(hashStr);
 }
 
-
-// Configura hora via NTP com retry
+// ================== NTP ==================
 void syncTime() {
   int retries = 0;
+  timeSynced = false;
+
   while (!timeSynced && retries < MAX_NTP_RETRIES) {
     Serial.println("Tentando sincronizar NTP...");
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
@@ -119,35 +121,28 @@ void syncTime() {
     if (getLocalTime(&timeinfo)) {
       timeSynced = true;
       lastNtpSync = millis();
-      Serial.println("Hora NTP sincronizada com sucesso!");
+      Serial.println("Hora NTP sincronizada!");
       break;
     } else {
       retries++;
-      Serial.println("Falha ao sincronizar hora. Tentando novamente...");
+      Serial.println("Falha ao sincronizar hora. Retry...");
       yield();
-      delay(2000); // espera 2s antes da próxima tentativa
+      delay(2000);
     }
   }
 
   if (!timeSynced) {
-    Serial.println("Não foi possível sincronizar NTP. Usando fallback com millis().");
-    // Aqui podemos usar millis() + offset como fallback temporário
+    fallbackBase = millis() / 1000UL;
+    Serial.println("Usando fallback com millis()");
   }
 }
 
-// Função para pegar a hora atual com fallback
 time_t getCurrentTime() {
-  if (timeSynced) {
-    return time(NULL);
-  } else {
-    // Fallback: usamos millis() desde boot como "tempo relativo"
-    static time_t fallbackBase = 0;
-    if (fallbackBase == 0) fallbackBase = millis() / 1000; // marca o início do fallback
-    return fallbackBase + millis() / 1000;
-  }
+  if (timeSynced) return time(NULL);
+  return fallbackBase + millis() / 1000UL;
 }
 
-// Verifica cookie usando hora real
+// ================== LOGIN ==================
 bool isLoggedIn() {
   if (!server.hasHeader("Cookie")) return false;
   String cookie = server.header("Cookie");
@@ -156,15 +151,13 @@ bool isLoggedIn() {
   start += 8;
   int end = cookie.indexOf(";", start);
   String token = (end == -1) ? cookie.substring(start) : cookie.substring(start, end);
-
-  time_t now = getCurrentTime();
-  return (token == sessionToken && now < sessionExpiry);
+  return (token == sessionToken && getCurrentTime() < sessionExpiry);
 }
 
-// Handlers
+// ================== HANDLERS ==================
 void handleLogin() {
   if (isLoggedIn()) {
-    server.sendHeader("Location","/relay");
+    server.sendHeader("Location", "/relay");
     server.send(303);
     return;
   }
@@ -172,57 +165,60 @@ void handleLogin() {
   if (server.method() == HTTP_POST) {
     String user = server.arg("user");
     String pass = server.arg("pass");
-    if (user==USERNAME && sha256(pass)==PASSWORD_HASH) {
+    if (user == USERNAME && sha256(pass) == PASSWORD_HASH) {
       sessionToken = String((uint32_t)esp_random(), HEX) + String((uint32_t)esp_random(), HEX);
       sessionExpiry = getCurrentTime() + SESSION_DURATION;
-      server.sendHeader("Set-Cookie", "session="+sessionToken+"; Max-Age=604800; HttpOnly");
-      server.sendHeader("Location","/relay");
+      server.sendHeader("Set-Cookie", "session=" + sessionToken + "; Max-Age=604800; HttpOnly");
+      server.sendHeader("Location", "/relay");
       server.send(303);
       return;
     } else {
-      server.send(200,"text/html","<h1>Senha incorreta</h1><a href='/'>Voltar</a>");
+      server.send(200, "text/html", "<h1>Senha incorreta</h1><a href='/'>Voltar</a>");
       return;
     }
   }
-  server.send(200,"text/html",loginPage);
+
+  server.send(200, "text/html", loginPage);
 }
 
 void handleRelay() {
   if (!isLoggedIn()) {
-    server.sendHeader("Location","/");
+    server.sendHeader("Location", "/");
     server.send(303);
     return;
   }
-  server.send(200,"text/html",relayPage());
+  server.send(200, "text/html", relayPage());
 }
 
 void handlePulse() {
   if (!isLoggedIn()) {
-    server.send(403,"text/plain","Não autorizado");
+    server.send(403, "text/plain", "Não autorizado");
     return;
   }
-  if(!relayActive){
+  if (!relayActive) {
     relayActive = true;
     relayStart = millis();
     digitalWrite(RELAY_PIN, LOW);
   }
-  server.send(200,"text/plain","Relé acionado!");
+  server.send(200, "text/plain", "Relé acionado!");
 }
 
+// ================== SETUP ==================
 void setup() {
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, HIGH);
   Serial.begin(115200);
 
-  WiFi.begin(ssid,password);
-  while(WiFi.status()!=WL_CONNECTED){
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    yield();
   }
   Serial.println();
-  Serial.print("IP: "); Serial.println(WiFi.localIP());
+  Serial.println(WiFi.localIP());
 
-  syncTime(); // sincroniza hora ao iniciar
+  syncTime();
 
   server.on("/", handleLogin);
   server.on("/login", handleLogin);
@@ -231,17 +227,16 @@ void setup() {
   server.begin();
 }
 
+// ================== LOOP ==================
 void loop() {
   server.handleClient();
 
-  // Relé não bloqueante
-  if(relayActive && millis() - relayStart >= RELAY_DURATION){
+  if (relayActive && millis() - relayStart >= RELAY_DURATION) {
     digitalWrite(RELAY_PIN, HIGH);
     relayActive = false;
   }
 
-  // Resincroniza NTP a cada NTP_SYNC_INTERVAL
-  if(millis() - lastNtpSync > NTP_SYNC_INTERVAL){
+  if (timeSynced && millis() - lastNtpSync > NTP_SYNC_INTERVAL) {
     syncTime();
   }
 }
