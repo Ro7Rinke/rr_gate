@@ -1,4 +1,4 @@
-//version 0.3
+//version 0.4
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -31,8 +31,8 @@ const unsigned long RELAY_DURATION = 500; // 0.5 seg
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = -3 * 3600; // GMT-3
 const int daylightOffset_sec = 0;
-unsigned long lastNtpSync = 0;
-const unsigned long NTP_SYNC_INTERVAL = 12UL * 60UL * 60UL * 1000UL; // 12h
+// unsigned long lastNtpSync = 0;
+// const unsigned long NTP_SYNC_INTERVAL = 12UL * 60UL * 60UL * 1000UL; // 12h
 bool timeSynced = false;   // indica se a hora real já foi sincronizada
 const int MAX_NTP_RETRIES = 5;
 
@@ -120,7 +120,7 @@ void syncTime() {
     struct tm timeinfo;
     if (getLocalTime(&timeinfo)) {
       timeSynced = true;
-      lastNtpSync = millis();
+      // lastNtpSync = millis();
       Serial.println("Hora NTP sincronizada!");
       break;
     } else {
@@ -168,7 +168,7 @@ void handleLogin() {
     if (user == USERNAME && sha256(pass) == PASSWORD_HASH) {
       sessionToken = String((uint32_t)esp_random(), HEX) + String((uint32_t)esp_random(), HEX);
       sessionExpiry = getCurrentTime() + SESSION_DURATION;
-      server.sendHeader("Set-Cookie", "session=" + sessionToken + "; Max-Age=604800; HttpOnly");
+      server.sendHeader("Set-Cookie", "session=" + sessionToken + "; Max-Age=604800; HttpOnly; SameSite=Strict");
       server.sendHeader("Location", "/relay");
       server.send(303);
       return;
@@ -236,7 +236,7 @@ void loop() {
     relayActive = false;
   }
 
-  if (timeSynced && millis() - lastNtpSync > NTP_SYNC_INTERVAL) {
-    syncTime();
-  }
+  // if (timeSynced && millis() - lastNtpSync > NTP_SYNC_INTERVAL) {
+  //   syncTime();
+  // }
 }
