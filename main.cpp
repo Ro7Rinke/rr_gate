@@ -1,4 +1,4 @@
-//version 0.5
+//version 0.6
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -15,7 +15,7 @@ WebServer server(80);
 
 // Usuário e senha (SHA256 de "1234")
 const String USERNAME = "admin";
-const String PASSWORD_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8f9660a1b2c7b2d2a1c1ee9a5";
+const String PASSWORD_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
 
 // Sessão
 String sessionToken = "";
@@ -96,9 +96,9 @@ String sha256(const String &input) {
   byte hash[32];
   mbedtls_sha256_context ctx;
   mbedtls_sha256_init(&ctx);
-  mbedtls_sha256_starts_ret(&ctx, 0);
-  mbedtls_sha256_update_ret(&ctx, (const unsigned char*)input.c_str(), input.length());
-  mbedtls_sha256_finish_ret(&ctx, hash);
+  mbedtls_sha256_starts(&ctx, 0);
+  mbedtls_sha256_update(&ctx, (const unsigned char*)input.c_str(), input.length());
+  mbedtls_sha256_finish(&ctx, hash);
   mbedtls_sha256_free(&ctx);
 
   char hashStr[65];
@@ -224,6 +224,11 @@ void setup() {
   server.on("/login", handleLogin);
   server.on("/relay", handleRelay);
   server.on("/pulse", handlePulse);
+
+  const char* headerkeys[] = {"Cookie"};
+  size_t headerkeyssize = sizeof(headerkeys)/sizeof(char*);
+  server.collectHeaders(headerkeys, headerkeyssize);
+
   server.begin();
 }
 
