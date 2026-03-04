@@ -1,4 +1,4 @@
-//version 0.7
+//version 0.8
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -6,16 +6,17 @@
 #include <mbedtls/sha256.h>
 #include <esp_random.h>
 #include <time.h>
+#include "secrets.h"
 
-const char* ssid = "WIFI_NAME";
-const char* password = "WIFI_PASS";
+// const char* ssid = "WIFI_NAME";
+// const char* password = "WIFI_PASS";
 
 const int RELAY_PIN = 5;
 WebServer server(80);
 
 // Usuário e senha (SHA256 de "1234")
-const String USERNAME = "admin";
-const String PASSWORD_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
+// const String USERNAME = "admin";
+// const String PASSWORD_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
 
 // Sessão
 String sessionToken = "";
@@ -33,7 +34,7 @@ const long gmtOffset_sec = -3 * 3600; // GMT-3
 const int daylightOffset_sec = 0;
 // unsigned long lastNtpSync = 0;
 // const unsigned long NTP_SYNC_INTERVAL = 12UL * 60UL * 60UL * 1000UL; // 12h
-bool timeSynced = false;   // indica se a hora real já foi sincronizada
+bool timeSynced = false;
 const int MAX_NTP_RETRIES = 5;
 
 // Fallback
@@ -47,12 +48,69 @@ const char* loginPage = R"rawliteral(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Login</title>
 <style>
-body { display:flex; justify-content:center; align-items:center; height:100vh; background:#2a2a2a; font-family:sans-serif; margin:0; }
-form { display:flex; flex-direction:column; background:#333; padding:40px; border-radius:15px; box-shadow: 0 10px 25px rgba(0,0,0,0.6); width:90%; max-width:300px; }
-input { margin:10px 0; padding:15px; font-size:1.5em; border-radius:10px; border:none; outline:none; }
-button { margin-top:20px; padding:20px; font-size:1.8em; border-radius:50px; background: linear-gradient(145deg,#FFD700,#FFC300); color:#222; border:none; cursor:pointer; box-shadow: 0 10px 20px rgba(0,0,0,0.5), inset 0 -6px 15px rgba(0,0,0,0.3), inset 0 6px 10px rgba(255,255,255,0.2); transition: all 0.2s ease; }
-button:hover { transform: scale(1.05); box-shadow: 0 12px 25px rgba(0,0,0,0.6), inset 0 -6px 15px rgba(0,0,0,0.3), inset 0 6px 10px rgba(255,255,255,0.25); }
-button:active { transform: scale(0.95); box-shadow: 0 5px 10px rgba(0,0,0,0.4), inset 0 -3px 8px rgba(0,0,0,0.3), inset 0 3px 6px rgba(255,255,255,0.2); }
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: sans-serif;
+  background: #2a2a2a;
+}
+
+body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100dvh;
+  padding: 20px;
+}
+
+form {
+  width: 100%;
+  max-width: 380px;
+  background: #333;
+  padding: 40px 30px;
+  border-radius: 20px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.6);
+  display: flex;
+  flex-direction: column;
+}
+
+input {
+  margin: 12px 0;
+  padding: 15px;
+  font-size: 1.2rem;
+  border-radius: 12px;
+  border: none;
+  outline: none;
+}
+
+button {
+  margin-top: 25px;
+  padding: 18px;
+  font-size: 1.5rem;
+  border-radius: 50px;
+  background: linear-gradient(145deg,#FFD700,#FFC300);
+  color: #222;
+  border: none;
+  cursor: pointer;
+  box-shadow: 
+    0 10px 20px rgba(0,0,0,0.5),
+    inset 0 -6px 15px rgba(0,0,0,0.3),
+    inset 0 6px 10px rgba(255,255,255,0.2);
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  transform: scale(1.05);
+}
+
+button:active {
+  transform: scale(0.95);
+}
 </style>
 </head>
 <body>
@@ -68,24 +126,91 @@ button:active { transform: scale(0.95); box-shadow: 0 5px 10px rgba(0,0,0,0.4), 
 String relayPage() {
   return R"rawliteral(
 <!DOCTYPE html>
-<html>
+<html lang="pt-br">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rele</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Controle</title>
+
 <style>
-body { display:flex; justify-content:center; align-items:center; height:100vh; background:#2a2a2a; margin:0; font-family:sans-serif; }
-button { width:300px; height:300px; border-radius:50%; border:none; background: linear-gradient(145deg,#FFD700,#FFC300); color:#222; font-size:3.5em; cursor:pointer; box-shadow: 0 10px 25px rgba(0,0,0,0.6), inset 0 -6px 15px rgba(0,0,0,0.3), inset 0 6px 10px rgba(255,255,255,0.2); transition: all 0.2s ease; text-shadow:0 5px 5px rgba(0,0,0,0.4); }
-button:hover { transform: scale(1.05); box-shadow: 0 12px 30px rgba(0,0,0,0.7), inset 0 -6px 15px rgba(0,0,0,0.3), inset 0 6px 10px rgba(255,255,255,0.25); }
-button:active { transform: scale(0.95); box-shadow: 0 5px 15px rgba(0,0,0,0.5), inset 0 -3px 8px rgba(0,0,0,0.3), inset 0 3px 6px rgba(255,255,255,0.2); }
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100dvh;
+  background: #2a2a2a;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 24px;
+}
+
+.container {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+button {
+  width: min(80vw, 320px);
+  height: min(80vw, 320px);
+  border-radius: 50%;
+  border: none;
+
+  background: linear-gradient(145deg, #FFD700, #FFC300);
+  color: #222;
+  font-size: clamp(2.3rem, 6vw, 3.5rem);
+  font-weight: 600;
+  cursor: pointer;
+
+  box-shadow:
+    0 15px 30px rgba(0,0,0,0.6),
+    inset 0 -8px 18px rgba(0,0,0,0.3),
+    inset 0 8px 12px rgba(255,255,255,0.25);
+
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  text-align: center;
+  line-height: 1.2;
+}
+
+button:hover {
+  transform: scale(1.05);
+}
+
+button:active {
+  transform: scale(0.95);
+  box-shadow:
+    0 8px 18px rgba(0,0,0,0.5),
+    inset 0 -4px 10px rgba(0,0,0,0.3),
+    inset 0 4px 8px rgba(255,255,255,0.2);
+}
 </style>
 </head>
+
 <body>
-<button id="activateBtn">Ativar</button>
+
+<div class="container">
+  <button id="activateBtn">Acionar⚡</button>
+</div>
+
 <script>
 document.getElementById("activateBtn").addEventListener("click", () => {
-  fetch('/pulse').then(r=>r.text()).then(alert);
+  fetch('/pulse')
+    .then(r => r.text())
+    .then(msg => alert(msg))
+    .catch(() => alert("Erro ao comunicar com o dispositivo."));
 });
 </script>
+
 </body>
 </html>
 )rawliteral";
