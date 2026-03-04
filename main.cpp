@@ -1,4 +1,4 @@
-//version 0.6
+//version 0.7
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -48,7 +48,7 @@ const char* loginPage = R"rawliteral(
 <title>Login</title>
 <style>
 body { display:flex; justify-content:center; align-items:center; height:100vh; background:#2a2a2a; font-family:sans-serif; margin:0; }
-form { display:flex; flex-direction:column; background:#333; padding:40px; border-radius:15px; box-shadow: 0 10px 25px rgba(0,0,0,0.6); width:90%; max-width:400px; }
+form { display:flex; flex-direction:column; background:#333; padding:40px; border-radius:15px; box-shadow: 0 10px 25px rgba(0,0,0,0.6); width:90%; max-width:300px; }
 input { margin:10px 0; padding:15px; font-size:1.5em; border-radius:10px; border:none; outline:none; }
 button { margin-top:20px; padding:20px; font-size:1.8em; border-radius:50px; background: linear-gradient(145deg,#FFD700,#FFC300); color:#222; border:none; cursor:pointer; box-shadow: 0 10px 20px rgba(0,0,0,0.5), inset 0 -6px 15px rgba(0,0,0,0.3), inset 0 6px 10px rgba(255,255,255,0.2); transition: all 0.2s ease; }
 button:hover { transform: scale(1.05); box-shadow: 0 12px 25px rgba(0,0,0,0.6), inset 0 -6px 15px rgba(0,0,0,0.3), inset 0 6px 10px rgba(255,255,255,0.25); }
@@ -57,8 +57,8 @@ button:active { transform: scale(0.95); box-shadow: 0 5px 10px rgba(0,0,0,0.4), 
 </head>
 <body>
 <form method="POST" action="/login">
-<input type="text" name="user" placeholder="Usuário" required>
-<input type="password" name="pass" placeholder="Senha" required>
+<input type="text" name="user" placeholder="User" required>
+<input type="password" name="pass" placeholder="Password" required>
 <button type="submit">Entrar</button>
 </form>
 </body>
@@ -71,10 +71,10 @@ String relayPage() {
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Relé</title>
+<title>Rele</title>
 <style>
 body { display:flex; justify-content:center; align-items:center; height:100vh; background:#2a2a2a; margin:0; font-family:sans-serif; }
-button { width:400px; height:400px; border-radius:50%; border:none; background: linear-gradient(145deg,#FFD700,#FFC300); color:#222; font-size:3.5em; cursor:pointer; box-shadow: 0 10px 25px rgba(0,0,0,0.6), inset 0 -6px 15px rgba(0,0,0,0.3), inset 0 6px 10px rgba(255,255,255,0.2); transition: all 0.2s ease; text-shadow:0 5px 5px rgba(0,0,0,0.4); }
+button { width:300px; height:300px; border-radius:50%; border:none; background: linear-gradient(145deg,#FFD700,#FFC300); color:#222; font-size:3.5em; cursor:pointer; box-shadow: 0 10px 25px rgba(0,0,0,0.6), inset 0 -6px 15px rgba(0,0,0,0.3), inset 0 6px 10px rgba(255,255,255,0.2); transition: all 0.2s ease; text-shadow:0 5px 5px rgba(0,0,0,0.4); }
 button:hover { transform: scale(1.05); box-shadow: 0 12px 30px rgba(0,0,0,0.7), inset 0 -6px 15px rgba(0,0,0,0.3), inset 0 6px 10px rgba(255,255,255,0.25); }
 button:active { transform: scale(0.95); box-shadow: 0 5px 15px rgba(0,0,0,0.5), inset 0 -3px 8px rgba(0,0,0,0.3), inset 0 3px 6px rgba(255,255,255,0.2); }
 </style>
