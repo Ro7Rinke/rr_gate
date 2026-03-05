@@ -1,6 +1,7 @@
-//version 0.8
+//version 0.9
 
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <WebServer.h>
 #include <Arduino.h>
 #include <mbedtls/sha256.h>
@@ -342,6 +343,10 @@ void setup() {
   }
   Serial.println();
   Serial.println(WiFi.localIP());
+
+  if (MDNS.begin("portao")) {
+    Serial.println("mDNS iniciado");
+  }
 
   syncTime();
 
