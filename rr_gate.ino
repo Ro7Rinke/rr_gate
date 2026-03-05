@@ -1,4 +1,4 @@
-//version 0.10
+// version 0.11
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -9,45 +9,32 @@
 #include <time.h>
 #include "secrets.h"
 
+#define TOKEN_LEN 16  // 8 bytes hex (uint32_t x2)
+#define MAX_PASS_LEN 64
+
 struct Session {
-  String token;
-  String username;
+  char token[TOKEN_LEN + 1];
+  char username[MAX_USERNAME_LEN + 1];
   time_t expiry;
   bool active;
 };
 
 Session sessions[USER_COUNT];
 
-// const char* ssid = "WIFI_NAME";
-// const char* password = "WIFI_PASS";
-
 const int RELAY_PIN = 5;
 WebServer server(80);
 
-// Usuário e senha (SHA256 de "1234")
-// const String USERNAME = "admin";
-// const String PASSWORD_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
+const time_t SESSION_DURATION = 7UL * 24UL * 60UL * 60UL;
 
-// Sessão
-// String sessionToken = "";
-// time_t sessionExpiry = 0;
-const time_t SESSION_DURATION = 7UL * 24UL * 60UL * 60UL; // 1 semana
-
-// Pulso do relé
 bool relayActive = false;
 unsigned long relayStart = 0;
-const unsigned long RELAY_DURATION = 500; // 0.5 seg
+const unsigned long RELAY_DURATION = 500;
 
-// Configuração NTP
 const char* ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = -3 * 3600; // GMT-3
+const long gmtOffset_sec = -3 * 3600;
 const int daylightOffset_sec = 0;
-// unsigned long lastNtpSync = 0;
-// const unsigned long NTP_SYNC_INTERVAL = 12UL * 60UL * 60UL * 1000UL; // 12h
 bool timeSynced = false;
 const int MAX_NTP_RETRIES = 5;
-
-// Fallback
 time_t fallbackBase = 0;
 
 // ================== HTML ==================
@@ -226,50 +213,42 @@ document.getElementById("activateBtn").addEventListener("click", () => {
 )rawliteral";
 }
 
-// ================== FUNÇÕES ==================
-String sha256(const String &input) {
+// ================= SHA256 =================
+void sha256(const char* input, char* outputHex) {
   byte hash[32];
   mbedtls_sha256_context ctx;
   mbedtls_sha256_init(&ctx);
   mbedtls_sha256_starts(&ctx, 0);
-  mbedtls_sha256_update(&ctx, (const unsigned char*)input.c_str(), input.length());
+  mbedtls_sha256_update(&ctx, (const unsigned char*)input, strlen(input));
   mbedtls_sha256_finish(&ctx, hash);
   mbedtls_sha256_free(&ctx);
 
-  char hashStr[65];
-  for (int i = 0; i < 32; i++) sprintf(hashStr + i*2, "%02x", hash[i]);
-  hashStr[64] = 0;
+  for (int i = 0; i < 32; i++)
+    sprintf(outputHex + i * 2, "%02x", hash[i]);
 
-  return String(hashStr);
+  outputHex[64] = 0;
 }
 
-// ================== NTP ==================
+// ================= NTP =================
 void syncTime() {
   int retries = 0;
   timeSynced = false;
 
   while (!timeSynced && retries < MAX_NTP_RETRIES) {
-    Serial.println("Tentando sincronizar NTP...");
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
     struct tm timeinfo;
     if (getLocalTime(&timeinfo)) {
       timeSynced = true;
-      // lastNtpSync = millis();
-      Serial.println("Hora NTP sincronizada!");
       break;
     } else {
       retries++;
-      Serial.println("Falha ao sincronizar hora. Retry...");
-      yield();
       delay(2000);
     }
   }
 
-  if (!timeSynced) {
+  if (!timeSynced)
     fallbackBase = millis() / 1000UL;
-    Serial.println("Usando fallback com millis()");
-  }
 }
 
 time_t getCurrentTime() {
@@ -277,90 +256,100 @@ time_t getCurrentTime() {
   return fallbackBase + millis() / 1000UL;
 }
 
-// ================== LOGIN ==================
-bool authenticate(const String& user, const String& pass) {
-  String passHash = sha256(pass);
+// ================= AUTH =================
+bool authenticate(const char* user, const char* pass) {
+  char passHash[65];
+  sha256(pass, passHash);
 
   for (int i = 0; i < USER_COUNT; i++) {
-    if (user == USERS[i].username &&
-        passHash == USERS[i].passwordHash) {
+    if (strcmp(user, USERS[i].username) == 0 &&
+        strcmp(passHash, USERS[i].passwordHash) == 0) {
       return true;
     }
   }
   return false;
 }
 
-bool createSession(const String& username, String& outToken) {
-  time_t now = getCurrentTime();
-
-  // 1) Limpa sessões expiradas
-  for (int i = 0; i < USER_COUNT; i++) {
-    if (sessions[i].active && sessions[i].expiry < now) {
-      sessions[i].active = false;
-    }
-  }
-
-  // 2) Procura slot livre
-  for (int i = 0; i < USER_COUNT; i++) {
-    if (!sessions[i].active) {
-      sessions[i].token =
-        String((uint32_t)esp_random(), HEX) +
-        String((uint32_t)esp_random(), HEX);
-
-      sessions[i].username = username;
-      sessions[i].expiry = now + SESSION_DURATION;
-      sessions[i].active = true;
-
-      outToken = sessions[i].token;
-      return true;
-    }
-  }
-
-  // 3) Nenhum slot livre → sobrescreve a mais antiga
-  int oldestIndex = 0;
-  time_t oldestExpiry = sessions[0].expiry;
-
-  for (int i = 1; i < USER_COUNT; i++) {
-    if (sessions[i].expiry < oldestExpiry) {
-      oldestExpiry = sessions[i].expiry;
-      oldestIndex = i;
-    }
-  }
-
-  // Sobrescreve
-  sessions[oldestIndex].token =
-    String((uint32_t)esp_random(), HEX) +
-    String((uint32_t)esp_random(), HEX);
-
-  sessions[oldestIndex].username = username;
-  sessions[oldestIndex].expiry = now + SESSION_DURATION;
-  sessions[oldestIndex].active = true;
-
-  outToken = sessions[oldestIndex].token;
-  return true;
+// ================= SESSION =================
+void generateToken(char* outToken) {
+  uint32_t r1 = esp_random();
+  uint32_t r2 = esp_random();
+  sprintf(outToken, "%08x%08x", r1, r2);
 }
 
-bool isLoggedIn(String* outUser = nullptr) {
-  if (!server.hasHeader("Cookie")) return false;
-
-  String cookie = server.header("Cookie");
-  int start = cookie.indexOf("session=");
-  if (start == -1) return false;
-
-  start += 8;
-  int end = cookie.indexOf(";", start);
-  String token = (end == -1) ?
-    cookie.substring(start) :
-    cookie.substring(start, end);
-
+bool createSession(const char* username, char* outToken) {
   time_t now = getCurrentTime();
+
+  for (int i = 0; i < USER_COUNT; i++) {
+    if (sessions[i].active && sessions[i].expiry < now)
+      sessions[i].active = false;
+  }
 
   for (int i = 0; i < USER_COUNT; i++) {
     if (sessions[i].active &&
-        sessions[i].token == token &&
-        sessions[i].expiry > now) {
+        strcmp(sessions[i].username, username) == 0)
+      sessions[i].active = false;
+  }
 
-      if (outUser) *outUser = sessions[i].username;
+  for (int i = 0; i < USER_COUNT; i++) {
+    if (!sessions[i].active) {
+
+      generateToken(sessions[i].token);
+      strncpy(sessions[i].username, username, MAX_USERNAME_LEN);
+      sessions[i].username[MAX_USERNAME_LEN] = 0;
+      sessions[i].expiry = now + SESSION_DURATION;
+      sessions[i].active = true;
+
+      strcpy(outToken, sessions[i].token);
+      return true;
+    }
+  }
+
+  int oldest = 0;
+  for (int i = 1; i < USER_COUNT; i++) {
+    if (sessions[i].expiry < sessions[oldest].expiry)
+      oldest = i;
+  }
+
+  generateToken(sessions[oldest].token);
+  strncpy(sessions[oldest].username, username, MAX_USERNAME_LEN);
+  sessions[oldest].username[MAX_USERNAME_LEN] = 0;
+  sessions[oldest].expiry = now + SESSION_DURATION;
+  sessions[oldest].active = true;
+
+  strcpy(outToken, sessions[oldest].token);
+  return true;
+}
+
+bool isLoggedIn(char* outUser = nullptr) {
+  if (!server.hasHeader("Cookie")) return false;
+
+  const String& cookieStr = server.header("Cookie");
+  char cookie[256];
+  cookieStr.toCharArray(cookie, sizeof(cookie));
+
+  char* pos = strstr(cookie, "session=");
+  if (!pos) return false;
+
+  pos += 8;
+
+  char token[TOKEN_LEN + 1];
+  int i = 0;
+  while (*pos && *pos != ';' && i < TOKEN_LEN) {
+    token[i++] = *pos++;
+  }
+  token[i] = 0;
+
+  time_t now = getCurrentTime();
+
+  for (int j = 0; j < USER_COUNT; j++) {
+    if (sessions[j].active &&
+        strcmp(sessions[j].token, token) == 0 &&
+        sessions[j].expiry > now) {
+
+      if (outUser)
+        strcpy(outUser, sessions[j].username);
+
       return true;
     }
   }
@@ -368,8 +357,9 @@ bool isLoggedIn(String* outUser = nullptr) {
   return false;
 }
 
-// ================== HANDLERS ==================
+// ================= HANDLERS =================
 void handleLogin() {
+
   if (isLoggedIn()) {
     server.sendHeader("Location", "/relay");
     server.send(303);
@@ -377,31 +367,34 @@ void handleLogin() {
   }
 
   if (server.method() == HTTP_POST) {
-  String user = server.arg("user");
-  String pass = server.arg("pass");
 
-  if (authenticate(user, pass)) {
-    String newToken;
+    char user[MAX_USERNAME_LEN + 1];
+    char pass[MAX_PASS_LEN];
 
-    if (createSession(user, newToken)) {
-      server.sendHeader("Set-Cookie",
-        "session=" + newToken +
-        "; Max-Age=604800; HttpOnly; SameSite=Strict; Path=/");
+    server.arg("user").toCharArray(user, sizeof(user));
+    server.arg("pass").toCharArray(pass, sizeof(pass));
 
-      server.sendHeader("Location", "/relay");
-      server.send(303);
-      return;
-    } else {
-      server.send(200, "text/html",
-        "<h1>Limite de sessões atingido</h1>");
-      return;
+    if (authenticate(user, pass)) {
+
+      char newToken[TOKEN_LEN + 1];
+
+      if (createSession(user, newToken)) {
+
+        char cookieHeader[128];
+        snprintf(cookieHeader, sizeof(cookieHeader),
+                 "session=%s; Max-Age=604800; HttpOnly; SameSite=Strict; Path=/",
+                 newToken);
+
+        server.sendHeader("Set-Cookie", cookieHeader);
+        server.sendHeader("Location", "/relay");
+        server.send(303);
+        return;
+      }
     }
-  } else {
-    server.send(200, "text/html",
-      "<h1>Credenciais inválidas</h1>");
+
+    server.send(200, "text/html", "<h1>Credenciais inválidas</h1>");
     return;
   }
-}
 
   server.send(200, "text/html", loginPage);
 }
@@ -412,47 +405,47 @@ void handleRelay() {
     server.send(303);
     return;
   }
-  server.send(200, "text/html", relayPage());
+  server.send(200, "text/html", relayPage().c_str());
 }
 
 void handlePulse() {
-  String user;
-  if (!isLoggedIn(&user)) {
+
+  char user[MAX_USERNAME_LEN + 1];
+
+  if (!isLoggedIn(user)) {
     server.send(403, "text/plain", "Não autorizado");
     return;
   }
 
-  Serial.println("Portão acionado por: " + user);
+  Serial.print("Portão acionado por: ");
+  Serial.println(user);
+
   if (!relayActive) {
     relayActive = true;
     relayStart = millis();
     digitalWrite(RELAY_PIN, LOW);
   }
+
   server.send(200, "text/plain", "Relé acionado!");
 }
 
-// ================== SETUP ==================
+// ================= SETUP =================
 void setup() {
+
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, HIGH);
   Serial.begin(115200);
 
-  for (int i = 0; i < USER_COUNT; i++) {
+  for (int i = 0; i < USER_COUNT; i++)
     sessions[i].active = false;
-  }
 
   WiFi.begin(ssid, password);
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print(".");
-    yield();
   }
-  Serial.println();
-  Serial.println(WiFi.localIP());
 
-  if (MDNS.begin("portao")) {
-    Serial.println("mDNS iniciado");
-  }
+  if (MDNS.begin("portao")) {}
 
   syncTime();
 
@@ -462,22 +455,18 @@ void setup() {
   server.on("/pulse", handlePulse);
 
   const char* headerkeys[] = {"Cookie"};
-  size_t headerkeyssize = sizeof(headerkeys)/sizeof(char*);
-  server.collectHeaders(headerkeys, headerkeyssize);
+  server.collectHeaders(headerkeys, 1);
 
   server.begin();
 }
 
-// ================== LOOP ==================
+// ================= LOOP =================
 void loop() {
+
   server.handleClient();
 
   if (relayActive && millis() - relayStart >= RELAY_DURATION) {
     digitalWrite(RELAY_PIN, HIGH);
     relayActive = false;
   }
-
-  // if (timeSynced && millis() - lastNtpSync > NTP_SYNC_INTERVAL) {
-  //   syncTime();
-  // }
 }
