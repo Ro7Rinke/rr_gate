@@ -1,4 +1,4 @@
-//version 0.9
+//version 0.10
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -8,6 +8,15 @@
 #include <esp_random.h>
 #include <time.h>
 #include "secrets.h"
+
+struct Session {
+  String token;
+  String username;
+  time_t expiry;
+  bool active;
+};
+
+Session sessions[USER_COUNT];
 
 // const char* ssid = "WIFI_NAME";
 // const char* password = "WIFI_PASS";
@@ -20,8 +29,8 @@ WebServer server(80);
 // const String PASSWORD_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
 
 // Sessão
-String sessionToken = "";
-time_t sessionExpiry = 0;
+// String sessionToken = "";
+// time_t sessionExpiry = 0;
 const time_t SESSION_DURATION = 7UL * 24UL * 60UL * 60UL; // 1 semana
 
 // Pulso do relé
@@ -269,15 +278,94 @@ time_t getCurrentTime() {
 }
 
 // ================== LOGIN ==================
-bool isLoggedIn() {
+bool authenticate(const String& user, const String& pass) {
+  String passHash = sha256(pass);
+
+  for (int i = 0; i < USER_COUNT; i++) {
+    if (user == USERS[i].username &&
+        passHash == USERS[i].passwordHash) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool createSession(const String& username, String& outToken) {
+  time_t now = getCurrentTime();
+
+  // 1) Limpa sessões expiradas
+  for (int i = 0; i < USER_COUNT; i++) {
+    if (sessions[i].active && sessions[i].expiry < now) {
+      sessions[i].active = false;
+    }
+  }
+
+  // 2) Procura slot livre
+  for (int i = 0; i < USER_COUNT; i++) {
+    if (!sessions[i].active) {
+      sessions[i].token =
+        String((uint32_t)esp_random(), HEX) +
+        String((uint32_t)esp_random(), HEX);
+
+      sessions[i].username = username;
+      sessions[i].expiry = now + SESSION_DURATION;
+      sessions[i].active = true;
+
+      outToken = sessions[i].token;
+      return true;
+    }
+  }
+
+  // 3) Nenhum slot livre → sobrescreve a mais antiga
+  int oldestIndex = 0;
+  time_t oldestExpiry = sessions[0].expiry;
+
+  for (int i = 1; i < USER_COUNT; i++) {
+    if (sessions[i].expiry < oldestExpiry) {
+      oldestExpiry = sessions[i].expiry;
+      oldestIndex = i;
+    }
+  }
+
+  // Sobrescreve
+  sessions[oldestIndex].token =
+    String((uint32_t)esp_random(), HEX) +
+    String((uint32_t)esp_random(), HEX);
+
+  sessions[oldestIndex].username = username;
+  sessions[oldestIndex].expiry = now + SESSION_DURATION;
+  sessions[oldestIndex].active = true;
+
+  outToken = sessions[oldestIndex].token;
+  return true;
+}
+
+bool isLoggedIn(String* outUser = nullptr) {
   if (!server.hasHeader("Cookie")) return false;
+
   String cookie = server.header("Cookie");
   int start = cookie.indexOf("session=");
   if (start == -1) return false;
+
   start += 8;
   int end = cookie.indexOf(";", start);
-  String token = (end == -1) ? cookie.substring(start) : cookie.substring(start, end);
-  return (token == sessionToken && getCurrentTime() < sessionExpiry);
+  String token = (end == -1) ?
+    cookie.substring(start) :
+    cookie.substring(start, end);
+
+  time_t now = getCurrentTime();
+
+  for (int i = 0; i < USER_COUNT; i++) {
+    if (sessions[i].active &&
+        sessions[i].token == token &&
+        sessions[i].expiry > now) {
+
+      if (outUser) *outUser = sessions[i].username;
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ================== HANDLERS ==================
@@ -289,20 +377,31 @@ void handleLogin() {
   }
 
   if (server.method() == HTTP_POST) {
-    String user = server.arg("user");
-    String pass = server.arg("pass");
-    if (user == USERNAME && sha256(pass) == PASSWORD_HASH) {
-      sessionToken = String((uint32_t)esp_random(), HEX) + String((uint32_t)esp_random(), HEX);
-      sessionExpiry = getCurrentTime() + SESSION_DURATION;
-      server.sendHeader("Set-Cookie", "session=" + sessionToken + "; Max-Age=604800; HttpOnly; SameSite=Strict");
+  String user = server.arg("user");
+  String pass = server.arg("pass");
+
+  if (authenticate(user, pass)) {
+    String newToken;
+
+    if (createSession(user, newToken)) {
+      server.sendHeader("Set-Cookie",
+        "session=" + newToken +
+        "; Max-Age=604800; HttpOnly; SameSite=Strict; Path=/");
+
       server.sendHeader("Location", "/relay");
       server.send(303);
       return;
     } else {
-      server.send(200, "text/html", "<h1>Senha incorreta</h1><a href='/'>Voltar</a>");
+      server.send(200, "text/html",
+        "<h1>Limite de sessões atingido</h1>");
       return;
     }
+  } else {
+    server.send(200, "text/html",
+      "<h1>Credenciais inválidas</h1>");
+    return;
   }
+}
 
   server.send(200, "text/html", loginPage);
 }
@@ -317,10 +416,13 @@ void handleRelay() {
 }
 
 void handlePulse() {
-  if (!isLoggedIn()) {
+  String user;
+  if (!isLoggedIn(&user)) {
     server.send(403, "text/plain", "Não autorizado");
     return;
   }
+
+  Serial.println("Portão acionado por: " + user);
   if (!relayActive) {
     relayActive = true;
     relayStart = millis();
@@ -334,6 +436,10 @@ void setup() {
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, HIGH);
   Serial.begin(115200);
+
+  for (int i = 0; i < USER_COUNT; i++) {
+    sessions[i].active = false;
+  }
 
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
