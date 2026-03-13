@@ -1,4 +1,4 @@
-// version 0.11
+// version 0.13
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -7,10 +7,13 @@
 #include <mbedtls/sha256.h>
 #include <esp_random.h>
 #include <time.h>
+#include <RCSwitch.h>
+#include <Preferences.h>
 #include "secrets.h"
 
 #define TOKEN_LEN 16  // 8 bytes hex (uint32_t x2)
 #define MAX_PASS_LEN 64
+#define MAX_REMOTES 10
 
 struct Session {
   char token[TOKEN_LEN + 1];
@@ -21,7 +24,15 @@ struct Session {
 
 Session sessions[USER_COUNT];
 
-const int RELAY_PIN = 5;
+Preferences prefs;
+
+uint32_t remotes[MAX_REMOTES];
+int remoteCount = 0;
+bool learningMode = false;
+const int RF_PIN = 12;
+RCSwitch rf = RCSwitch();
+
+const int RELAY_PIN = 13;
 WebServer server(80);
 
 const time_t SESSION_DURATION = 7UL * 24UL * 60UL * 60UL;
@@ -211,6 +222,51 @@ document.getElementById("activateBtn").addEventListener("click", () => {
 </body>
 </html>
 )rawliteral";
+}
+
+bool remoteAuthorized(uint32_t code) {
+
+  for (int i = 0; i < remoteCount; i++) {
+    if (remotes[i] == code)
+      return true;
+  }
+
+  return false;
+}
+
+void removeRemote(int id) {
+
+  if (id < 0 || id >= remoteCount)
+    return;
+
+  for (int i = id; i < remoteCount - 1; i++) {
+    remotes[i] = remotes[i + 1];
+  }
+
+  remoteCount--;
+}
+
+void saveRemotes() {
+  prefs.putInt("count", remoteCount);
+  for (int i = 0; i < remoteCount; i++) {
+    char key[10];
+    sprintf(key, "r%d", i);
+    prefs.putULong(key, remotes[i]);
+  }
+}
+
+void loadRemotes() {
+  remoteCount = prefs.getInt("count", 0);
+  for (int i = 0; i < remoteCount; i++) {
+    char key[10];
+    sprintf(key, "r%d", i);
+    remotes[i] = prefs.getULong(key, 0);
+  }
+}
+
+void clearRemotes() {
+  prefs.clear();
+  remoteCount = 0;
 }
 
 // ================= SHA256 =================
@@ -429,12 +485,43 @@ void handlePulse() {
   server.send(200, "text/plain", "Relé acionado!");
 }
 
+void handleLearn() {
+
+  if (!isLoggedIn()) {
+    server.send(403, "text/plain", "Nao autorizado");
+    return;
+  }
+
+  learningMode = true;
+
+  server.send(200, "text/plain",
+              "Pressione o botão do controle agora...");
+}
+
+void handleClearRemotes() {
+
+  if (!isLoggedIn()) {
+    server.send(403, "text/plain", "Nao autorizado");
+    return;
+  }
+
+  clearRemotes();
+
+  server.send(200, "text/plain", "Controles removidos!");
+}
+
 // ================= SETUP =================
 void setup() {
 
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, HIGH);
   Serial.begin(115200);
+
+  prefs.begin("rf", false);
+
+  loadRemotes();
+
+  rf.enableReceive(digitalPinToInterrupt(RF_PIN));
 
   for (int i = 0; i < USER_COUNT; i++)
     sessions[i].active = false;
@@ -453,6 +540,8 @@ void setup() {
   server.on("/login", handleLogin);
   server.on("/relay", handleRelay);
   server.on("/pulse", handlePulse);
+  server.on("/learn", handleLearn);
+  server.on("/remotes/clear", handleClearRemotes);
 
   const char* headerkeys[] = {"Cookie"};
   server.collectHeaders(headerkeys, 1);
@@ -468,5 +557,42 @@ void loop() {
   if (relayActive && millis() - relayStart >= RELAY_DURATION) {
     digitalWrite(RELAY_PIN, HIGH);
     relayActive = false;
+  }
+
+  if (rf.available()) {
+
+    uint32_t code = rf.getReceivedValue();
+
+    Serial.print("RF recebido: ");
+    Serial.println(code);
+
+    if (learningMode) {
+
+      if (remoteCount < MAX_REMOTES) {
+        remotes[remoteCount++] = code;
+        saveRemotes();
+
+        Serial.print("Controle cadastrado: ");
+        Serial.println(code);
+      }
+
+      learningMode = false;
+
+    } else {
+      if (remoteAuthorized(code)) {
+
+        Serial.println("Controle autorizado");
+
+        if (!relayActive) {
+          relayActive = true;
+          relayStart = millis();
+          digitalWrite(RELAY_PIN, LOW);
+        }
+
+      } else {
+        Serial.println("Controle não cadastrado");
+      }
+    }
+    rf.resetAvailable();
   }
 }
